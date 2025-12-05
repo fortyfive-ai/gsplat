@@ -2,6 +2,14 @@
 
 This guide provides step-by-step instructions to set up gsplat on machines with NVIDIA RTX 5090 GPUs.
 
+## Prompt
+
+create a virtual environment to set up the project referencing @README.md. the GPU is 5090 so you should think hard to come up with a solution that is compatible with the gpu and the gsplat. Do tests when you are not certain.
+
+Run @README.md evaluation section to make sure it really works and can train gaussian.
+
+the Gaussian densification step matters. Can we fix this ?
+
 ## Prerequisites
 
 - NVIDIA RTX 5090 GPU
