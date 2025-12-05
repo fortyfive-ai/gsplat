@@ -246,12 +246,3 @@ Initialize git submodules:
 ```bash
 git submodule update --init --recursive
 ```
-
-## Expected Performance
-
-On RTX 5090 with bonsai scene (3000 steps):
-- PSNR: ~28.4
-- SSIM: ~0.91
-- LPIPS: ~0.18
-- Training time: ~60 seconds
-- Rendering: ~83 FPS
