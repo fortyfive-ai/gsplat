@@ -144,12 +144,14 @@ def split(
     scales = torch.exp(params["scales"][sel])
     quats = F.normalize(params["quats"][sel], dim=-1)
     rotmats = normalized_quat_to_rotmat(quats)  # [N, 3, 3]
-    samples = torch.einsum(
-        "nij,nj,bnj->bni",
-        rotmats,
-        scales,
-        torch.randn(2, len(scales), 3, device=device),
-    )  # [2, N, 3]
+    # Compute samples using broadcasting instead of einsum to avoid CUBLAS issues
+    # on newer GPU architectures (e.g., RTX 5090 / Blackwell)
+    # Original: samples = torch.einsum("nij,nj,bnj->bni", rotmats, scales, rand)
+    rand = torch.randn(2, len(scales), 3, device=device)
+    scaled_rand = rand * scales.unsqueeze(0)  # [2, N, 3]
+    # Expand for broadcasting: rotmats[N, 3, 3], scaled_rand[2, N, 1, 3]
+    # Result after element-wise multiplication: [2, N, 3, 3], sum over last dim -> [2, N, 3]
+    samples = (rotmats.unsqueeze(0) * scaled_rand.unsqueeze(2)).sum(dim=-1)  # [2, N, 3]
 
     def param_fn(name: str, p: Tensor) -> Tensor:
         repeats = [2] + [1] * (p.dim() - 1)
@@ -365,5 +367,8 @@ def inject_noise_to_position(
         * (op_sigmoid(1 - opacities)).unsqueeze(-1)
         * scaler
     )
-    noise = torch.einsum("bij,bj->bi", covars, noise)
+    # Use broadcasting instead of einsum to avoid CUBLAS issues on newer GPUs
+    # Original: noise = torch.einsum("bij,bj->bi", covars, noise)
+    # covars: [N, 3, 3], noise: [N, 3] -> result: [N, 3]
+    noise = (covars * noise.unsqueeze(1)).sum(dim=-1)
     params["means"].add_(noise)
