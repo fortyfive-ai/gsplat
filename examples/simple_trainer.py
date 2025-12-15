@@ -79,13 +79,13 @@ class Config:
     # Number of training steps
     max_steps: int = 30_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [30_000, 40_000, 45_000, 60_000, 75_000])
     # Steps to save the model
-    save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    save_steps: List[int] = field(default_factory=lambda: [30_000, 40_000, 45_000, 60_000, 75_000])
     # Whether to save ply file (storage size can be large)
     save_ply: bool = False
     # Steps to save the model as ply
-    ply_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    ply_steps: List[int] = field(default_factory=lambda: [30_000, 40_000, 45_000, 60_000, 75_000])
     # Whether to disable video generation during training and evaluation
     disable_video: bool = False
 
@@ -115,6 +115,12 @@ class Config:
     strategy: Union[DefaultStrategy, MCMCStrategy] = field(
         default_factory=DefaultStrategy
     )
+    # Stop refining GSs after this iteration (only applies to DefaultStrategy)
+    refine_stop_iter: int = 60_000
+    # Gradient threshold for densification (only applies to DefaultStrategy)
+    grow_grad2d: float = 0.0002
+    # Scale threshold for densification (only applies to DefaultStrategy)
+    grow_scale3d: float = 0.01
     # Use packed mode for rasterization, this leads to less memory usage but slightly slower.
     packed: bool = False
     # Use sparse gradients for optimization. (experimental)
@@ -1276,6 +1282,12 @@ if __name__ == "__main__":
     }
     cfg = tyro.extras.overridable_config_cli(configs)
     cfg.adjust_steps(cfg.steps_scaler)
+
+    # Apply refine_stop_iter and densification thresholds to DefaultStrategy if applicable
+    if isinstance(cfg.strategy, DefaultStrategy):
+        cfg.strategy.refine_stop_iter = cfg.refine_stop_iter
+        cfg.strategy.grow_grad2d = cfg.grow_grad2d
+        cfg.strategy.grow_scale3d = cfg.grow_scale3d
 
     # Import BilateralGrid and related functions based on configuration
     if cfg.use_bilateral_grid or cfg.use_fused_bilagrid:
