@@ -196,7 +196,9 @@ class Parser:
             )
             image_files = sorted(_get_rel_paths(image_dir))
         colmap_to_image = dict(zip(colmap_files, image_files))
-        image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
+        # Handle COLMAP image names that may contain relative paths
+        # by using basename for lookup
+        image_paths = [os.path.join(image_dir, colmap_to_image[os.path.basename(f)]) for f in image_names]
 
         # 3D points and {image_name -> [point_idx]}
         points = manager.points3D.astype(np.float32)
