@@ -3,13 +3,48 @@
 Video/Images to COLMAP reconstruction pipeline.
 Usage:
   python video_to_colmap.py input.mp4 output_dir [--fps 2] [--gpu 0]
+  python video_to_colmap.py video1.mp4 video2.mp4 video3.mp4 output_dir [--fps 2] [--gpu 0]
   python video_to_colmap.py /path/to/images_dir output_dir [--gpu 0]
 """
 
 import argparse
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
+
+
+def get_ffmpeg_path():
+    """Get ffmpeg executable path."""
+    ffmpeg_path = "/home/yanbinghan/bin/ffmpeg"
+    if not Path(ffmpeg_path).exists():
+        ffmpeg_path = "ffmpeg"
+    return ffmpeg_path
+
+
+def concat_videos(video_paths: list[Path], output_path: Path):
+    """Concatenate multiple videos into a single video using ffmpeg."""
+    ffmpeg_path = get_ffmpeg_path()
+
+    # Create a temporary file list for ffmpeg concat
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        list_file = Path(f.name)
+        for video in video_paths:
+            f.write(f"file '{video.resolve()}'\n")
+
+    try:
+        cmd = [
+            ffmpeg_path, "-f", "concat", "-safe", "0",
+            "-i", str(list_file),
+            "-c", "copy",
+            str(output_path)
+        ]
+
+        print(f"Concatenating {len(video_paths)} videos...")
+        subprocess.run(cmd, check=True)
+        print(f"Videos concatenated successfully")
+    finally:
+        list_file.unlink()
 
 
 def extract_frames(video_path: Path, output_dir: Path, fps: float = 2.0):
@@ -17,8 +52,10 @@ def extract_frames(video_path: Path, output_dir: Path, fps: float = 2.0):
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    ffmpeg_path = get_ffmpeg_path()
+
     cmd = [
-        "/home/yanbinghan/bin/ffmpeg", "-i", str(video_path),
+        ffmpeg_path, "-i", str(video_path),
         "-vf", f"fps={fps}",
         "-q:v", "2",
         str(images_dir / "frame_%04d.jpg")
@@ -109,30 +146,58 @@ def setup_images_from_directory(input_dir: Path, output_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="Video/Images to COLMAP reconstruction")
-    parser.add_argument("input", type=Path, help="Input video file (.mp4) or image directory")
+    parser.add_argument("inputs", nargs='+', type=Path, help="Input video file(s) (.mp4) or image directory")
     parser.add_argument("output", type=Path, help="Output directory")
     parser.add_argument("--fps", type=float, default=2.0, help="Frame extraction rate for video (default: 2)")
     parser.add_argument("--gpu", type=int, default=0, help="GPU index (default: 0)")
     args = parser.parse_args()
 
-    if not args.input.exists():
-        print(f"Error: Input not found: {args.input}")
+    # The last argument is the output directory, the rest are inputs
+    # We need to handle this since we use nargs='+'
+    if len(args.inputs) < 1:
+        print("Error: At least one input and an output directory required")
         return 1
 
-    args.output.mkdir(parents=True, exist_ok=True)
+    # Separate inputs and output
+    all_paths = args.inputs + [args.output]
+    output_dir = all_paths[-1]
+    input_paths = all_paths[:-1]
 
-    # Check if input is a directory or video file
-    if args.input.is_dir():
-        print(f"Input is a directory: {args.input}")
-        images_dir = setup_images_from_directory(args.input, args.output)
+    # Validate inputs exist
+    for input_path in input_paths:
+        if not input_path.exists():
+            print(f"Error: Input not found: {input_path}")
+            return 1
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if first input is a directory (assume all inputs are same type)
+    if input_paths[0].is_dir():
+        if len(input_paths) > 1:
+            print("Error: Multiple directories not supported. Please provide video files or a single image directory.")
+            return 1
+        print(f"Input is a directory: {input_paths[0]}")
+        images_dir = setup_images_from_directory(input_paths[0], output_dir)
         if images_dir is None:
             return 1
     else:
-        print(f"Input is a video file: {args.input}")
-        images_dir = extract_frames(args.input, args.output, args.fps)
+        # Handle video file(s)
+        video_files = input_paths
+
+        if len(video_files) == 1:
+            print(f"Input is a video file: {video_files[0]}")
+            video_to_process = video_files[0]
+        else:
+            print(f"Input is {len(video_files)} video files")
+            # Concatenate videos
+            concat_output = output_dir / "concatenated.mp4"
+            concat_videos(video_files, concat_output)
+            video_to_process = concat_output
+
+        images_dir = extract_frames(video_to_process, output_dir, args.fps)
 
     # Run COLMAP
-    sparse_dir = run_colmap(args.output, images_dir, args.gpu)
+    sparse_dir = run_colmap(output_dir, images_dir, args.gpu)
 
     print(f"\nReconstruction complete!")
     print(f"Results saved to: {sparse_dir}")
