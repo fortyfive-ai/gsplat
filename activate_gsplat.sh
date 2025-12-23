@@ -3,7 +3,7 @@
 # Usage: source activate_gsplat.sh
 
 # Activate virtual environment
-source /home/yanbinghan/fortyfive/gsplat/venv_gsplat/bin/activate
+source /home/yanbinghan/fortyfive/cobot/gsplat/venv_gsplat/bin/activate
 
 # Set CUDA environment variables
 export CUDA_HOME=/usr/local/cuda-12.9
