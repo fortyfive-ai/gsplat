@@ -350,6 +350,16 @@ class Parser:
         self.scene_scale = np.max(dists)
 
 
+def _find_mask_path(mask_dir: str, image_name: str) -> Optional[str]:
+    """Find mask file corresponding to an image, trying common extensions."""
+    base_name = os.path.splitext(os.path.basename(image_name))[0]
+    for ext in [".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"]:
+        mask_path = os.path.join(mask_dir, base_name + ext)
+        if os.path.exists(mask_path):
+            return mask_path
+    return None
+
+
 class Dataset:
     """A simple dataset class."""
 
@@ -359,16 +369,41 @@ class Dataset:
         split: str = "train",
         patch_size: Optional[int] = None,
         load_depths: bool = False,
+        load_masks: bool = False,
     ):
         self.parser = parser
         self.split = split
         self.patch_size = patch_size
         self.load_depths = load_depths
+        self.load_masks = load_masks
         indices = np.arange(len(self.parser.image_names))
         if split == "train":
             self.indices = indices[indices % self.parser.test_every != 0]
         else:
             self.indices = indices[indices % self.parser.test_every == 0]
+
+        # Setup mask loading
+        self.mask_paths = None
+        if load_masks:
+            data_dir = parser.data_dir
+            factor = parser.factor
+            # Look for masks folder (with or without factor suffix)
+            if factor > 1:
+                mask_dir = os.path.join(data_dir, f"masks_{factor}")
+                if not os.path.exists(mask_dir):
+                    mask_dir = os.path.join(data_dir, "masks")
+            else:
+                mask_dir = os.path.join(data_dir, "masks")
+
+            if os.path.exists(mask_dir):
+                self.mask_paths = []
+                for image_name in parser.image_names:
+                    mask_path = _find_mask_path(mask_dir, image_name)
+                    self.mask_paths.append(mask_path)
+                num_masks = sum(1 for p in self.mask_paths if p is not None)
+                print(f"[Dataset] Found {num_masks}/{len(self.mask_paths)} masks in {mask_dir}")
+            else:
+                print(f"[Dataset] Warning: load_masks=True but no masks folder found at {mask_dir}")
 
     def __len__(self):
         return len(self.indices)
@@ -380,7 +415,17 @@ class Dataset:
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
         params = self.parser.params_dict[camera_id]
         camtoworlds = self.parser.camtoworlds[index]
+        # Start with camera-level mask (for fisheye undistortion)
         mask = self.parser.mask_dict[camera_id]
+
+        # Load per-image mask from file if available
+        image_mask = None
+        if self.mask_paths is not None and self.mask_paths[index] is not None:
+            mask_img = imageio.imread(self.mask_paths[index])
+            # Convert to boolean: non-zero values are True (pixels to KEEP)
+            if len(mask_img.shape) == 3:
+                mask_img = mask_img[..., 0]  # Take first channel if RGB
+            image_mask = mask_img > 127  # Threshold at 127
 
         if len(params) > 0:
             # Images are distorted. Undistort them.
@@ -391,6 +436,12 @@ class Dataset:
             image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
             x, y, w, h = self.parser.roi_undist_dict[camera_id]
             image = image[y : y + h, x : x + w]
+            # Also undistort and crop the image mask if present
+            if image_mask is not None:
+                image_mask = cv2.remap(
+                    image_mask.astype(np.uint8), mapx, mapy, cv2.INTER_NEAREST
+                )
+                image_mask = image_mask[y : y + h, x : x + w] > 0
 
         if self.patch_size is not None:
             # Random crop.
@@ -400,6 +451,20 @@ class Dataset:
             image = image[y : y + self.patch_size, x : x + self.patch_size]
             K[0, 2] -= x
             K[1, 2] -= y
+            # Also crop the masks
+            if mask is not None:
+                mask = mask[y : y + self.patch_size, x : x + self.patch_size]
+            if image_mask is not None:
+                image_mask = image_mask[y : y + self.patch_size, x : x + self.patch_size]
+
+        # Combine camera-level mask and image-level mask
+        final_mask = None
+        if mask is not None and image_mask is not None:
+            final_mask = mask & image_mask
+        elif mask is not None:
+            final_mask = mask
+        elif image_mask is not None:
+            final_mask = image_mask
 
         data = {
             "K": torch.from_numpy(K).float(),
@@ -407,8 +472,8 @@ class Dataset:
             "image": torch.from_numpy(image).float(),
             "image_id": item,  # the index of the image in the dataset
         }
-        if mask is not None:
-            data["mask"] = torch.from_numpy(mask).bool()
+        if final_mask is not None:
+            data["mask"] = torch.from_numpy(final_mask.copy()).bool()
 
         if self.load_depths:
             # projected points to image plane to get depths

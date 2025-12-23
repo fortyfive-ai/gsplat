@@ -179,6 +179,9 @@ class Config:
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
+    # Enable mask loading from masks/ folder to exclude pixels from training
+    load_masks: bool = False
+
     # Dump information to tensorboard every this steps
     tb_every: int = 100
     # Save training images to tensorboard
@@ -349,8 +352,9 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
+            load_masks=cfg.load_masks,
         )
-        self.valset = Dataset(self.parser, split="val")
+        self.valset = Dataset(self.parser, split="val", load_masks=cfg.load_masks)
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 
@@ -687,10 +691,28 @@ class Runner:
             )
 
             # loss
-            l1loss = F.l1_loss(colors, pixels)
-            ssimloss = 1.0 - fused_ssim(
-                colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
-            )
+            if masks is not None:
+                # Apply mask to loss calculation
+                # For L1: only compute on valid pixels
+                valid_colors = colors[masks]
+                valid_pixels = pixels[masks]
+                l1loss = F.l1_loss(valid_colors, valid_pixels)
+                # For SSIM: set masked-out regions to same value in both images
+                # so they don't contribute to the loss
+                colors_for_ssim = colors.clone()
+                pixels_for_ssim = pixels.clone()
+                colors_for_ssim[~masks] = 0
+                pixels_for_ssim[~masks] = 0
+                ssimloss = 1.0 - fused_ssim(
+                    colors_for_ssim.permute(0, 3, 1, 2),
+                    pixels_for_ssim.permute(0, 3, 1, 2),
+                    padding="valid",
+                )
+            else:
+                l1loss = F.l1_loss(colors, pixels)
+                ssimloss = 1.0 - fused_ssim(
+                    colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
+                )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:
                 # query depths from depth map
@@ -965,13 +987,21 @@ class Runner:
                     canvas,
                 )
 
-                pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                # Apply masks to both colors and pixels for fair metrics
+                if masks is not None:
+                    pixels_masked = pixels.clone()
+                    pixels_masked[~masks] = 0
+                    pixels_p = pixels_masked.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                else:
+                    pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
                 colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
                 if cfg.use_bilateral_grid:
                     cc_colors = color_correct(colors, pixels)
+                    if masks is not None:
+                        cc_colors[~masks] = 0
                     cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
                     metrics["cc_ssim"].append(self.ssim(cc_colors_p, pixels_p))
