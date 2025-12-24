@@ -22,14 +22,85 @@ def get_ffmpeg_path():
     return ffmpeg_path
 
 
+def get_ffprobe_path():
+    """Get ffprobe executable path."""
+    ffprobe_path = "/home/yanbinghan/bin/ffprobe"
+    if not Path(ffprobe_path).exists():
+        ffprobe_path = "ffprobe"
+    return ffprobe_path
+
+
+def get_video_resolution(video_path: Path) -> tuple[int, int]:
+    """Get video resolution (width, height) using ffprobe."""
+    ffprobe_path = get_ffprobe_path()
+
+    cmd = [
+        ffprobe_path,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=s=x:p=0",
+        str(video_path)
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    width, height = map(int, result.stdout.strip().split('x'))
+    return width, height
+
+
 def concat_videos(video_paths: list[Path], output_path: Path):
-    """Concatenate multiple videos into a single video using ffmpeg."""
+    """Concatenate multiple videos into a single video using ffmpeg.
+
+    If videos have different resolutions, they will be resized to match
+    the resolution of the first video before concatenation.
+    """
     ffmpeg_path = get_ffmpeg_path()
+
+    # Get resolution of the first video (target resolution)
+    target_width, target_height = get_video_resolution(video_paths[0])
+    print(f"Target resolution: {target_width}x{target_height} (from first video)")
+
+    # Check if all videos have the same resolution
+    need_resize = False
+    for i, video in enumerate(video_paths):
+        width, height = get_video_resolution(video)
+        print(f"Video {i+1}: {video.name} - {width}x{height}")
+        if width != target_width or height != target_height:
+            need_resize = True
+
+    # If resizing is needed, create temporary resized videos
+    temp_dir = None
+    videos_to_concat = video_paths
+
+    if need_resize:
+        print(f"\nResizing videos to match target resolution {target_width}x{target_height}...")
+        temp_dir = Path(tempfile.mkdtemp())
+        videos_to_concat = []
+
+        for i, video in enumerate(video_paths):
+            width, height = get_video_resolution(video)
+            if width == target_width and height == target_height:
+                # No resize needed, use original
+                videos_to_concat.append(video)
+                print(f"  Video {i+1}: No resize needed")
+            else:
+                # Resize to target resolution
+                resized_path = temp_dir / f"resized_{i}_{video.name}"
+                resize_cmd = [
+                    ffmpeg_path,
+                    "-i", str(video),
+                    "-vf", f"scale={target_width}:{target_height}",
+                    "-c:a", "copy",  # Copy audio without re-encoding
+                    str(resized_path)
+                ]
+                print(f"  Video {i+1}: Resizing from {width}x{height}...")
+                subprocess.run(resize_cmd, check=True, capture_output=True)
+                videos_to_concat.append(resized_path)
 
     # Create a temporary file list for ffmpeg concat
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         list_file = Path(f.name)
-        for video in video_paths:
+        for video in videos_to_concat:
             f.write(f"file '{video.resolve()}'\n")
 
     try:
@@ -40,11 +111,14 @@ def concat_videos(video_paths: list[Path], output_path: Path):
             str(output_path)
         ]
 
-        print(f"Concatenating {len(video_paths)} videos...")
+        print(f"\nConcatenating {len(video_paths)} videos...")
         subprocess.run(cmd, check=True)
         print(f"Videos concatenated successfully")
     finally:
         list_file.unlink()
+        # Clean up temporary resized videos
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 
 def extract_frames(video_path: Path, output_dir: Path, fps: float = 2.0):
