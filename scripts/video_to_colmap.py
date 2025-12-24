@@ -478,7 +478,7 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
     masks_dir.mkdir(parents=True, exist_ok=True)
 
     # Path to proxie masks directory
-    proxie_masks_dir = Path("/Users/yanbinghan/Fortyfive Dropbox/Yanbing Han/third_party/cobot-fortyfive/cobot_datasets/proxie_masks")
+    proxie_masks_dir = Path("${DROPBOX}/cobot_datasets/proxie_masks")
 
     # Get list of images to create masks for
     image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
