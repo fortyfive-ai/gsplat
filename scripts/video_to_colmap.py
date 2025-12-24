@@ -81,18 +81,29 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0):
     if database_path.exists():
         database_path.unlink()
 
-    # Feature extraction (auto device selection)
+    # Set device for GPU acceleration
+    # Note: GPU index is controlled via CUDA_VISIBLE_DEVICES environment variable
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+
+    # Use auto device selection - pycolmap will use GPU if available, otherwise CPU
+    device = pycolmap.Device.auto
+    print(f"\nUsing device: auto (will use GPU if available, otherwise CPU)")
+
+    # Feature extraction
     print("\nStep 1: Extracting features...")
     pycolmap.extract_features(
         database_path=str(database_path),
         image_path=str(images_dir),
         camera_mode=pycolmap.CameraMode.SINGLE,
+        device=device,
     )
 
     # Feature matching
     print("\nStep 2: Matching features...")
     pycolmap.match_exhaustive(
         database_path=str(database_path),
+        device=device,
     )
 
     # Sparse reconstruction with pycolmap
