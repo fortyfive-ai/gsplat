@@ -14,8 +14,11 @@ conda activate colmap
 # Install PyTorch with CUDA 12.4 support
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# Install pycolmap
-pip install pycolmap
+# Install pycolmap with CUDA support (recommended for GPU acceleration)
+pip install pycolmap-cuda12
+
+# Or install CPU-only version (slower)
+# pip install pycolmap
 ```
 
 ## Verification
@@ -26,8 +29,8 @@ Verify the installation:
 # Check PyTorch and CUDA
 python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
 
-# Check pycolmap
-python -c "import pycolmap; print(f'pycolmap version: {pycolmap.__version__}')"
+# Check pycolmap and CUDA device support
+python -c "import pycolmap; print(f'pycolmap version: {pycolmap.__version__}'); print(f'CUDA device: {pycolmap.Device.cuda}')"
 ```
 
 Expected output:
@@ -35,7 +38,21 @@ Expected output:
 PyTorch: 2.6.0+cu124
 CUDA available: True
 pycolmap version: 3.13.0
+CUDA device: Device.cuda
 ```
+
+## GPU Acceleration
+
+The `video_to_colmap.py` script automatically uses GPU acceleration when `pycolmap-cuda12` is installed.
+
+To verify GPU is being used during feature extraction, look for this log message:
+```
+Creating SIFT GPU feature extractor
+```
+
+If you see `Creating SIFT CPU feature extractor` instead, GPU is not being used. Ensure you have:
+1. Installed `pycolmap-cuda12` (not `pycolmap`)
+2. A compatible NVIDIA GPU with CUDA drivers installed
 
 ## Usage
 
