@@ -1,0 +1,25 @@
+{
+  "description": "Config for 6cam_4twirlcam_corridor_v2: 6 static cameras (video1-6) + 4 twirling cameras (video7-10)",
+  "group_by": "video_camera",
+  "matching": {
+    "intra_set_overlap": 70,
+    "inter_set_sample_rate": 1
+  },
+  "sets": {
+    "static_cameras": {
+      "groups": [
+        "video1_navfront",
+        "video2_navright",
+        "video3_navrear",
+        "video4_navleft",
+        "video5_blindspotfront",
+        "video6_blindspotrear",
+        "video7_navfront",
+        "video8_navfront",
+        "video9_navfront",
+        "video10_navfront"
+      ],
+      "matching_mode": "exhaustive"
+    }
+  }
+}
