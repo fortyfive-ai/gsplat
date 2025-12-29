@@ -15,32 +15,39 @@ Features:
   - Use --skip-colmap to test video processing without running COLMAP
 """
 
-import argparse
 import json
 from pathlib import Path
+from typing import List
+from params_proto import proto
 
 from .core.frame_extractor import extract_frames, extract_frames_from_multiple_videos, setup_images_from_directory
 from .core.mask_generator import setup_masks
 from .core.feature_matching import run_colmap
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Video/Images to COLMAP reconstruction")
-    parser.add_argument("inputs", nargs='+', type=Path, help="Input video file(s) (.mp4) or image directory")
-    parser.add_argument("output", type=Path, help="Output directory")
-    parser.add_argument("--fps", type=float, default=2.0, help="Frame extraction rate for video (default: 2)")
-    parser.add_argument("--gpu", type=int, default=0, help="GPU index (default: 0)")
-    parser.add_argument("--no-color-matching", action="store_true",
-                        help="Disable automatic color matching between videos (default: enabled)")
-    parser.add_argument("--skip-colmap", action="store_true",
-                        help="Skip COLMAP reconstruction (useful for testing video processing)")
-    parser.add_argument("--set-config", type=Path, required=True,
-                        help="JSON config file defining set groupings (required)")
-    args = parser.parse_args()
+@proto
+class Args:
+    """Video/Images to COLMAP reconstruction"""
+    inputs: List[str] = None  # Input video file(s) (.mp4) or image directory
+    output: str = None  # Output directory
+    fps: float = 2.0  # Frame extraction rate for video
+    gpu: int = 0  # GPU index
+    no_color_matching: bool = False  # Disable automatic color matching between videos
+    skip_colmap: bool = False  # Skip COLMAP reconstruction (useful for testing video processing)
+    set_config: str = None  # JSON config file defining set groupings (required)
+    camera_intrinsics: str = None  # Path to camera_intrinsics.json file for fixed intrinsics
 
-    # Use argparse parsed values directly
-    input_paths = args.inputs
-    output_dir = args.output
+
+def main():
+    """Main entry point for video to COLMAP pipeline"""
+    # Convert string inputs to Path objects
+    if Args.inputs is None or Args.output is None:
+        print("Error: inputs and output are required arguments")
+        print("Usage: python video_to_colmap.py --inputs video1.mp4 [video2.mp4 ...] --output output_dir")
+        return 1
+
+    input_paths = [Path(p) for p in Args.inputs]
+    output_dir = Path(Args.output)
 
     if len(input_paths) < 1:
         print("Error: At least one input required")
@@ -74,32 +81,38 @@ def main():
 
         if len(video_files) == 1:
             print(f"Input is a video file: {video_files[0]}")
-            images_dir, _ = extract_frames(video_files[0], output_dir, args.fps, "frame")
+            images_dir, _ = extract_frames(video_files[0], output_dir, Args.fps, "frame")
         else:
             print(f"Input is {len(video_files)} video files")
             # Extract frames from each video separately with unique prefixes
-            images_dir, frame_counts = extract_frames_from_multiple_videos(video_files, output_dir, args.fps)
+            images_dir, frame_counts = extract_frames_from_multiple_videos(video_files, output_dir, Args.fps)
             use_video_prefixes = True
 
     # Setup masks
     print("\nSetting up masks...")
     masks_dir = setup_masks(output_dir, images_dir, video_paths_for_masks,
-                           video_frame_counts=frame_counts, fps=args.fps,
+                           video_frame_counts=frame_counts, fps=Args.fps,
                            use_video_prefixes=use_video_prefixes)
 
     # Run COLMAP unless skipped
-    if args.skip_colmap:
+    if Args.skip_colmap:
         print("\nSkipping COLMAP reconstruction (--skip-colmap flag set)")
         print(f"Images saved to: {images_dir}")
         print(f"Masks saved to: {masks_dir}")
+        return 0
     else:
         # Load config file
-        if not args.set_config.exists():
-            print(f"Error: Config file not found: {args.set_config}")
+        if Args.set_config is None:
+            print("Error: --set-config is required when not skipping COLMAP")
             return 1
 
-        print(f"\nLoading config from: {args.set_config}")
-        with open(args.set_config, 'r') as f:
+        set_config_path = Path(Args.set_config)
+        if not set_config_path.exists():
+            print(f"Error: Config file not found: {set_config_path}")
+            return 1
+
+        print(f"\nLoading config from: {set_config_path}")
+        with open(set_config_path, 'r') as f:
             config = json.load(f)
 
         # Extract parameters from config
@@ -117,17 +130,31 @@ def main():
         if set_definitions:
             print(f"  sets defined: {len(set_definitions)}")
 
+        # Load camera intrinsics if provided
+        intrinsics_dict = None
+        if Args.camera_intrinsics is not None:
+            intrinsics_path = Path(Args.camera_intrinsics)
+            if not intrinsics_path.exists():
+                print(f"Error: Camera intrinsics file not found: {intrinsics_path}")
+                return 1
+            print(f"  Loading camera intrinsics from: {intrinsics_path}")
+            with open(intrinsics_path, 'r') as f:
+                intrinsics_dict = json.load(f)
+            print(f"  Loaded intrinsics for {len(intrinsics_dict)} camera(s)")
+
         sparse_dir = run_colmap(
             output_dir,
             images_dir,
-            args.gpu,
+            Args.gpu,
             group_by=group_by,
             set_definitions=set_definitions,
             intra_set_overlap=intra_set_overlap,
-            inter_set_sample_rate=inter_set_sample_rate
+            inter_set_sample_rate=inter_set_sample_rate,
+            camera_intrinsics=intrinsics_dict
         )
         print(f"\nReconstruction complete!")
         print(f"Results saved to: {sparse_dir}")
+        return 0
 
 
 if __name__ == "__main__":
