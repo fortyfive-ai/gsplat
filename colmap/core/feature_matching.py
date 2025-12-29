@@ -3,15 +3,361 @@
 import os
 import tempfile
 from pathlib import Path
+import re
 
 from .image_grouping import group_images_by_pattern, create_matching_sets
+
+
+def _normalize_camera_name(name: str) -> str:
+    """Normalize camera name for matching by removing common suffixes and prefixes.
+
+    Examples:
+        nav_front_d455_color_camera_info -> nav_front
+        blindspot_rear_d455_aligned_depth_to_color_camera_info -> blindspot_rear
+        navfront -> nav_front
+        navrear -> nav_rear
+    """
+    # Remove common suffixes
+    for suffix in ['_d455_color_camera_info', '_d455_aligned_depth_to_color_camera_info',
+                   '_color_camera_info', '_camera_info', '_d455']:
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+
+    # Normalize patterns like "navfront" to "nav_front"
+    # Handle common camera position patterns
+    replacements = {
+        'navfront': 'nav_front',
+        'navrear': 'nav_rear',
+        'navleft': 'nav_left',
+        'navright': 'nav_right',
+        'blindspotfront': 'blindspot_front',
+        'blindspotrear': 'blindspot_rear',
+    }
+
+    name_lower = name.lower()
+    for pattern, replacement in replacements.items():
+        if pattern in name_lower:
+            name = name_lower.replace(pattern, replacement)
+            break
+
+    return name
+
+
+def _extract_camera_name(image_filename: str, camera_intrinsics: dict = None) -> str:
+    """Extract camera name from image filename and match with intrinsics keys.
+
+    The function normalizes both the image filename and intrinsics keys to handle
+    variations like "navfront" vs "nav_front", and matches based on normalized names.
+
+    For example:
+        - Image "video1_navfront_0001.jpg" normalizes to "nav_front"
+        - Intrinsic key "nav_front_d455_color_camera_info" normalizes to "nav_front"
+        - They match!
+
+    Args:
+        image_filename: The image filename to extract camera name from
+        camera_intrinsics: Dictionary of camera intrinsics (keys are camera names)
+
+    Returns:
+        Camera name (the original key from camera_intrinsics), or "default" if no match found
+    """
+    # Remove extension and extract the camera part from filename
+    name = image_filename.rsplit('.', 1)[0]
+
+    # Extract pattern like "video1_navfront_0001" -> "navfront"
+    match = re.match(r'(?:video\d+_)?([a-z_]+)_\d+', name)
+    if match:
+        extracted_name = match.group(1)
+    else:
+        extracted_name = name
+
+    # Normalize the extracted name
+    normalized_extracted = _normalize_camera_name(extracted_name)
+
+    # If we have intrinsics dict, try to find best match
+    if camera_intrinsics is not None:
+        # Normalize all intrinsic keys and find matches
+        for camera_key in camera_intrinsics.keys():
+            normalized_key = _normalize_camera_name(camera_key)
+
+            # Check for exact match after normalization
+            if normalized_extracted == normalized_key:
+                return camera_key  # Return the original key from the dict
+
+            # Also check if normalized key is a substring (for partial matches)
+            if normalized_key in normalized_extracted or normalized_extracted in normalized_key:
+                return camera_key
+
+    return "default"
+
+
+def _prepopulate_database_with_cameras(database_path: Path, images_dir: Path, camera_intrinsics: dict):
+    """Pre-populate COLMAP database with cameras and images before feature extraction.
+
+    This creates the database structure with fixed intrinsics so that feature extraction
+    can use the correct camera parameters from the start.
+
+    Args:
+        database_path: Path to COLMAP database (will be created)
+        images_dir: Directory containing images
+        camera_intrinsics: Dictionary of camera intrinsics. Supports two formats:
+            1. ROS camera_info format: {"K": [fx,0,cx,0,fy,cy,0,0,1], "D": [k1,k2,p1,p2,...], "width": W, "height": H}
+            2. Direct format: {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "width": W, "height": H, "model": "PINHOLE"}
+    """
+    import sqlite3
+
+    # Get all image files
+    image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
+    if not image_files:
+        print("Error: No images found")
+        return
+
+    # Group images by camera name
+    image_to_camera = {}  # Maps image filename to camera name
+    camera_image_counts = {}  # Count images per camera
+
+    for image_file in image_files:
+        image_name = image_file.name
+        camera_name = _extract_camera_name(image_name, camera_intrinsics)
+        image_to_camera[image_name] = camera_name
+        camera_image_counts[camera_name] = camera_image_counts.get(camera_name, 0) + 1
+
+    # Get unique camera names
+    unique_cameras = set(image_to_camera.values())
+    print(f"    Found {len(unique_cameras)} unique camera types:")
+    for cam_name in sorted(unique_cameras):
+        print(f"      - {cam_name}: {camera_image_counts[cam_name]} images")
+
+    # Create database and tables
+    conn = sqlite3.connect(str(database_path))
+    cursor = conn.cursor()
+
+    # Create cameras table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cameras (
+            camera_id INTEGER PRIMARY KEY,
+            model INTEGER NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            params BLOB,
+            prior_focal_length INTEGER NOT NULL
+        )
+    """)
+
+    # Create images table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS images (
+            image_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            camera_id INTEGER NOT NULL,
+            prior_qw REAL,
+            prior_qx REAL,
+            prior_qy REAL,
+            prior_qz REAL,
+            prior_tx REAL,
+            prior_ty REAL,
+            prior_tz REAL,
+            FOREIGN KEY(camera_id) REFERENCES cameras(camera_id)
+        )
+    """)
+
+    # Create other required tables for COLMAP
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keypoints (
+            image_id INTEGER PRIMARY KEY NOT NULL,
+            rows INTEGER NOT NULL,
+            cols INTEGER NOT NULL,
+            data BLOB,
+            FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS descriptors (
+            image_id INTEGER PRIMARY KEY NOT NULL,
+            rows INTEGER NOT NULL,
+            cols INTEGER NOT NULL,
+            data BLOB,
+            FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS matches (
+            pair_id INTEGER PRIMARY KEY NOT NULL,
+            rows INTEGER NOT NULL,
+            cols INTEGER NOT NULL,
+            data BLOB
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS two_view_geometries (
+            pair_id INTEGER PRIMARY KEY NOT NULL,
+            rows INTEGER NOT NULL,
+            cols INTEGER NOT NULL,
+            data BLOB,
+            config INTEGER NOT NULL,
+            F BLOB,
+            E BLOB,
+            H BLOB,
+            qvec BLOB,
+            tvec BLOB
+        )
+    """)
+
+    conn.commit()
+
+    # Create or update cameras with fixed intrinsics
+    camera_id_map = {}  # Maps camera_name to camera_id
+    print(f"\n    Setting fixed intrinsics for each camera:")
+
+    # Camera model IDs (from COLMAP)
+    MODEL_IDS = {
+        "SIMPLE_PINHOLE": 0,
+        "PINHOLE": 1,
+        "SIMPLE_RADIAL": 2,
+        "RADIAL": 3,
+        "OPENCV": 4,
+        "OPENCV_FISHEYE": 5,
+        "FULL_OPENCV": 6,
+        "FOV": 7,
+        "SIMPLE_RADIAL_FISHEYE": 8,
+        "RADIAL_FISHEYE": 9,
+        "THIN_PRISM_FISHEYE": 10
+    }
+
+    camera_id_counter = 1
+    for camera_name in sorted(unique_cameras):
+        if camera_name not in camera_intrinsics:
+            print(f"      ⚠ {camera_name}: No intrinsics found in JSON, will use COLMAP auto-calibration")
+            continue
+
+        intrinsics = camera_intrinsics[camera_name]
+
+        # Parse ROS camera_info format
+        # K is a 3x3 matrix stored as [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+        # D is distortion coefficients array
+        if "K" in intrinsics and "D" in intrinsics:
+            K = intrinsics["K"]
+            D = intrinsics["D"]
+            width = intrinsics["width"]
+            height = intrinsics["height"]
+            distortion_model = intrinsics.get("distortion_model", "plumb_bob")
+
+            # Extract camera parameters from K matrix
+            fx = K[0]  # K[0, 0]
+            fy = K[4]  # K[1, 1]
+            cx = K[2]  # K[0, 2]
+            cy = K[5]  # K[1, 2]
+
+            # Determine COLMAP model based on distortion
+            # ROS typically uses "plumb_bob" model which maps to OPENCV in COLMAP
+            if len(D) >= 4 and any(d != 0 for d in D):
+                # Has distortion - use OPENCV model
+                model_id = MODEL_IDS["OPENCV"]
+                model_name = "OPENCV"
+                # OPENCV params: [fx, fy, cx, cy, k1, k2, p1, p2]
+                params = [
+                    fx, fy, cx, cy,
+                    D[0] if len(D) > 0 else 0.0,  # k1
+                    D[1] if len(D) > 1 else 0.0,  # k2
+                    D[2] if len(D) > 2 else 0.0,  # p1
+                    D[3] if len(D) > 3 else 0.0,  # p2
+                ]
+            else:
+                # No significant distortion - use PINHOLE model
+                model_id = MODEL_IDS["PINHOLE"]
+                model_name = "PINHOLE"
+                params = [fx, fy, cx, cy]
+
+        # Legacy format support (direct fx, fy, cx, cy keys)
+        elif "fx" in intrinsics and "fy" in intrinsics:
+            width = intrinsics["width"]
+            height = intrinsics["height"]
+            fx = intrinsics["fx"]
+            fy = intrinsics["fy"]
+            cx = intrinsics["cx"]
+            cy = intrinsics["cy"]
+
+            model_name = intrinsics.get("model", "PINHOLE")
+            if model_name == "PINHOLE":
+                model_id = MODEL_IDS["PINHOLE"]
+                params = [fx, fy, cx, cy]
+            elif model_name == "OPENCV":
+                model_id = MODEL_IDS["OPENCV"]
+                params = [
+                    fx, fy, cx, cy,
+                    intrinsics.get("k1", 0.0),
+                    intrinsics.get("k2", 0.0),
+                    intrinsics.get("p1", 0.0),
+                    intrinsics.get("p2", 0.0)
+                ]
+            else:
+                print(f"      ⚠ {camera_name}: Unsupported camera model '{model_name}', skipping")
+                continue
+        else:
+            print(f"      ⚠ {camera_name}: Invalid intrinsics format (missing K matrix or fx/fy), skipping")
+            continue
+        params_blob = bytes()
+        for p in params:
+            import struct
+            params_blob += struct.pack('d', p)  # double precision
+
+        cursor.execute(
+            "INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) VALUES (?, ?, ?, ?, ?, ?)",
+            (camera_id_counter, model_id, width, height, params_blob, 1)
+        )
+
+        camera_id_map[camera_name] = camera_id_counter
+
+        # Print detailed information for this camera
+        print(f"      ✓ {camera_name} (camera_id={camera_id_counter})")
+        print(f"          Model: {model_name}")
+        print(f"          Resolution: {width}x{height}")
+        print(f"          Focal length: fx={params[0]:.2f}, fy={params[1]:.2f}")
+        print(f"          Principal point: cx={params[2]:.2f}, cy={params[3]:.2f}")
+        if model_name == "OPENCV" and len(params) > 4:
+            print(f"          Distortion: k1={params[4]:.6f}, k2={params[5]:.6f}, p1={params[6]:.6f}, p2={params[7]:.6f}")
+        print(f"          Assigned to {camera_image_counts[camera_name]} images")
+
+        camera_id_counter += 1
+
+    # Insert images into the database with correct camera assignments
+    print(f"\n    Inserting images into database...")
+    image_id_counter = 1
+    inserted_count = 0
+
+    for image_file in image_files:
+        image_name = image_file.name
+        camera_name = image_to_camera[image_name]
+
+        # Get the camera_id for this image
+        if camera_name in camera_id_map:
+            camera_id = camera_id_map[camera_name]
+
+            # Insert image with no prior pose (will be estimated)
+            cursor.execute(
+                "INSERT INTO images (image_id, name, camera_id) VALUES (?, ?, ?)",
+                (image_id_counter, image_name, camera_id)
+            )
+            inserted_count += 1
+            image_id_counter += 1
+        else:
+            print(f"      ⚠ Skipping {image_name}: No camera intrinsics for {camera_name}")
+
+    conn.commit()
+    conn.close()
+    print(f"    Summary: Inserted {inserted_count} images with {len(camera_id_map)} camera(s)")
 
 
 def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
                group_by: str = "video_camera",
                set_definitions: dict = None,
                intra_set_overlap: int = 30,
-               inter_set_sample_rate: int = 5) -> Path:
+               inter_set_sample_rate: int = 5,
+               camera_intrinsics: dict = None) -> Path:
     """Run COLMAP reconstruction pipeline using pycolmap with set-based grouping.
 
     Args:
@@ -22,6 +368,9 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         set_definitions: Manual grouping into sets for matching strategy (from config)
         intra_set_overlap: Overlap for sequential matching within sets (from config)
         inter_set_sample_rate: Sample every Nth frame for cross-set matching (from config)
+        camera_intrinsics: Dictionary mapping camera names to their intrinsic parameters
+                          Format: {"camera_name": {"fx": ..., "fy": ..., "cx": ..., "cy": ...,
+                                  "width": ..., "height": ..., "model": "PINHOLE"}}
 
     Returns:
         Path: Path to sparse reconstruction directory
@@ -41,19 +390,56 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
     device = pycolmap.Device.auto
     print(f"\nUsing device: auto (will use GPU if available, otherwise CPU)")
 
+    # If intrinsics provided, pre-populate the database with cameras before feature extraction
+    if camera_intrinsics is not None:
+        print("\nStep 0: Setting up database with fixed camera intrinsics...")
+        _prepopulate_database_with_cameras(database_path, images_dir, camera_intrinsics)
+
     # Feature extraction
     print("\nStep 1: Extracting features...")
     extraction_options = pycolmap.FeatureExtractionOptions()
     extraction_options.sift.max_num_features = 8192
     extraction_options.use_gpu = (device == pycolmap.Device.cuda or device == pycolmap.Device.auto)
 
-    pycolmap.extract_features(
-        database_path=str(database_path),
-        image_path=str(images_dir),
-        camera_mode=pycolmap.CameraMode.SINGLE,
-        extraction_options=extraction_options,
-        device=device,
-    )
+    # When intrinsics are pre-populated, skip automatic feature extraction
+    # and just extract features using the existing database structure
+    if camera_intrinsics is None:
+        print("  Using automatic camera calibration")
+        camera_mode = pycolmap.CameraMode.SINGLE
+
+        pycolmap.extract_features(
+            database_path=str(database_path),
+            image_path=str(images_dir),
+            camera_mode=camera_mode,
+            extraction_options=extraction_options,
+            device=device,
+        )
+    else:
+        print("  Extracting features with fixed camera intrinsics...")
+        # The database already has cameras and images, just extract features
+        # Use COLMAP's feature extractor directly with the existing database
+        import subprocess
+
+        cmd = [
+            "colmap", "feature_extractor",
+            "--database_path", str(database_path),
+            "--image_path", str(images_dir),
+            "--ImageReader.single_camera", "0",  # Allow multiple cameras
+            "--ImageReader.camera_model", "PINHOLE",  # Will use existing cameras
+            "--SiftExtraction.max_num_features", str(extraction_options.sift.max_num_features),
+            "--SiftExtraction.use_gpu", "1" if extraction_options.use_gpu else "0",
+        ]
+
+        if extraction_options.use_gpu:
+            cmd.extend(["--SiftExtraction.gpu_index", str(gpu_index)])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print(f"  Error running feature_extractor:")
+            print(f"  STDOUT: {result.stdout}")
+            print(f"  STDERR: {result.stderr}")
+            raise RuntimeError(f"feature_extractor failed with return code {result.returncode}")
 
     # Get all images
     image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
@@ -202,12 +588,10 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         # Single set: check matching mode from config
         set_name = list(sets.keys())[0]
         matching_mode = set_configs[set_name]["matching_mode"]
-
+        matching_options = pycolmap.FeatureMatchingOptions()
+        matching_options.use_gpu = (device == pycolmap.Device.cuda or device == pycolmap.Device.auto)
         if matching_mode == "exhaustive":
             print("Single set detected, using exhaustive matching")
-            matching_options = pycolmap.FeatureMatchingOptions()
-            matching_options.use_gpu = (device == pycolmap.Device.cuda or device == pycolmap.Device.auto)
-
             pycolmap.match_exhaustive(
                 database_path=str(database_path),
                 matching_options=matching_options,
@@ -215,10 +599,7 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
             )
         else:
             print("Single set detected, using sequential matching")
-            matching_options = pycolmap.FeatureMatchingOptions()
-            matching_options.use_gpu = (device == pycolmap.Device.cuda or device == pycolmap.Device.auto)
             pairing_options = pycolmap.SequentialPairingOptions(overlap=intra_set_overlap)
-
             pycolmap.match_sequential(
                 database_path=str(database_path),
                 pairing_options=pairing_options,
@@ -228,10 +609,22 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
 
     # Sparse reconstruction with pycolmap
     print("\nStep 3: Running sparse reconstruction...")
+
+    # Configure mapper options
+    mapper_options = pycolmap.IncrementalPipelineOptions()
+
+    # If using fixed intrinsics, prevent refinement during bundle adjustment
+    if camera_intrinsics is not None:
+        print("  Disabling intrinsic refinement (using fixed parameters)")
+        mapper_options.ba_refine_focal_length = False
+        mapper_options.ba_refine_principal_point = False
+        mapper_options.ba_refine_extra_params = False
+
     reconstructions = pycolmap.incremental_mapping(
         database_path=str(database_path),
         image_path=str(images_dir),
         output_path=str(sparse_dir),
+        options=mapper_options,
     )
 
     # Report results
