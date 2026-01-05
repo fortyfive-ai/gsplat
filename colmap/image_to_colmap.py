@@ -91,7 +91,7 @@ def find_closest_depth_image(color_timestamp: str, depth_images: List[Path], tol
 
 
 def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: Path,
-                                          original_fps: float = None, target_fps: float = None) -> tuple[Path, dict]:
+                                          original_fps: float = None, target_fps: float = None) -> tuple[Path, dict, dict, dict]:
     """Setup images from multiple directories with prefixes.
 
     Args:
@@ -101,7 +101,8 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
         target_fps: Target FPS for downsampling
 
     Returns:
-        tuple: (images_dir, image_counts_per_dir)
+        tuple: (images_dir, image_counts_per_dir, human_mask_sources, image_name_mapping)
+              image_name_mapping maps new_name -> original_stem for human mask lookup
     """
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +127,8 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
         print(f"\nFPS downsampling enabled: {original_fps} fps -> {target_fps} fps (sample every {sample_rate} frames)")
 
     image_counts = {}
+    human_mask_sources = {}  # Maps video prefix to human_masks directory path
+    image_name_mapping = {}  # Maps new image name -> original image stem (for human mask lookup)
 
     for idx, input_dir in enumerate(input_dirs):
         # Find images in input directory
@@ -159,6 +162,16 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
         print(f"  Found {len(input_images)} images")
         print(f"  Using prefix: {prefix}")
 
+        # Check for human_masks directory alongside the input directory
+        # Expected structure: .../images/nav_front_d455_color_image_compressed
+        #                     .../human_masks/nav_front_d455_color_image_compressed
+        human_masks_dir = input_dir.parent.parent / "human_masks" / input_dir.name
+        if human_masks_dir.exists() and human_masks_dir.is_dir():
+            human_mask_files = list(human_masks_dir.glob("*.png")) + list(human_masks_dir.glob("*.jpg"))
+            if human_mask_files:
+                human_mask_sources[prefix] = human_masks_dir
+                print(f"  Found human_masks directory with {len(human_mask_files)} masks")
+
         # Copy or link images with prefix, applying FPS downsampling if enabled
         copied_count = 0
         depth_copied_count = 0
@@ -180,6 +193,9 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
                 link_path.symlink_to(img.resolve())
             except OSError:
                 shutil.copy2(img, link_path)
+
+            # Store mapping for human mask lookup (without extension)
+            image_name_mapping[Path(new_name).stem] = img.stem
 
             copied_count += 1
 
@@ -216,11 +232,11 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
     total_images = sum(image_counts.values())
     print(f"\nTotal images: {total_images} from {len(input_dirs)} directories")
 
-    return images_dir, image_counts
+    return images_dir, image_counts, human_mask_sources, image_name_mapping
 
 
 def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
-                                      original_fps: float = None, target_fps: float = None) -> Path:
+                                      original_fps: float = None, target_fps: float = None) -> tuple[Path, Path]:
     """Setup images from a single directory.
 
     Args:
@@ -230,7 +246,7 @@ def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
         target_fps: Target FPS for downsampling
 
     Returns:
-        Path: images_dir path, or None if no images found
+        tuple: (images_dir, human_masks_dir_source) - human_masks_dir_source is None if not found
     """
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +284,17 @@ def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
         print(f"  Found {len(depth_images)} depth images")
     else:
         print(f"Warning: No depth directory found for {input_dir.name}")
+
+    # Check for human_masks directory alongside the input directory
+    # Expected structure: .../images/nav_front_d455_color_image_compressed
+    #                     .../human_masks/nav_front_d455_color_image_compressed
+    human_masks_dir_source = None
+    human_masks_dir = input_dir.parent.parent / "human_masks" / input_dir.name
+    if human_masks_dir.exists() and human_masks_dir.is_dir():
+        human_mask_files = list(human_masks_dir.glob("*.png")) + list(human_masks_dir.glob("*.jpg"))
+        if human_mask_files:
+            human_masks_dir_source = human_masks_dir
+            print(f"Found human_masks directory with {len(human_mask_files)} masks")
 
     # Calculate sample rate for FPS downsampling
     sample_rate = 1
@@ -319,7 +346,7 @@ def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
     print(f"Linked {linked_count} images (sampled from {len(input_images)})")
     if depth_images:
         print(f"Linked {depth_linked_count} depth images")
-    return images_dir
+    return images_dir, human_masks_dir_source
 
 
 @proto.cli
@@ -365,15 +392,17 @@ def main(
     # Setup images
     use_prefixes = len(input_paths) > 1
     image_counts = None
+    human_mask_sources = None
+    image_name_mapping = None
 
     if use_prefixes:
         print(f"Processing {len(input_paths)} image directories...")
-        images_dir, image_counts = setup_images_from_multiple_directories(
+        images_dir, image_counts, human_mask_sources, image_name_mapping = setup_images_from_multiple_directories(
             input_paths, output_dir, original_fps, target_fps
         )
     else:
         print(f"Processing single image directory: {input_paths[0]}")
-        images_dir = setup_images_from_single_directory(
+        images_dir, human_mask_sources = setup_images_from_single_directory(
             input_paths[0], output_dir, original_fps, target_fps
         )
         if images_dir is None:
@@ -386,7 +415,9 @@ def main(
     pseudo_video_paths = [Path(str(p) + ".mp4") for p in input_paths]
     masks_dir = setup_masks(output_dir, images_dir, video_paths=pseudo_video_paths,
                            video_frame_counts=None, fps=None,
-                           use_video_prefixes=use_prefixes)
+                           use_video_prefixes=use_prefixes,
+                           human_mask_sources=human_mask_sources,
+                           image_name_mapping=image_name_mapping)
 
     # Run COLMAP unless skipped
     if skip_colmap:
