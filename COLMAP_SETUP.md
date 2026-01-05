@@ -27,7 +27,7 @@ colmap --help
       libgoogle-glog0v6t64 libfreeimage3 qtbase5-dev
   ```
 
-**Note:** The COLMAP binary is expected at `~/.local/bin/colmap`. The Python scripts reference this path directly.
+**Note:** The COLMAP binary must be available in your system PATH. The example above installs to `~/.local/bin/`, which should already be in PATH on most systems.
 
 
 ## Quick Setup

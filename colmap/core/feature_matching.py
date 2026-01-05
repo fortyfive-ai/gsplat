@@ -421,7 +421,7 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         import subprocess
 
         cmd = [
-            "/home/yanbing/.local/bin/colmap", "feature_extractor",
+            "colmap", "feature_extractor",
             "--database_path", str(database_path),
             "--image_path", str(images_dir),
             "--ImageReader.single_camera", "0",  # Allow multiple cameras
@@ -563,7 +563,7 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         use_gpu = "1" if (device == pycolmap.Device.cuda or device == pycolmap.Device.auto) else "0"
 
         cmd = [
-            "/home/yanbing/.local/bin/colmap", "matches_importer",
+            "colmap", "matches_importer",
             "--database_path", str(database_path),
             "--match_list_path", pairs_file,
             "--match_type", "pairs",
