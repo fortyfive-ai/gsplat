@@ -1,6 +1,5 @@
 # COLMAP Environment Setup
 
-This document describes how to set up a conda environment to run the `video_to_colmap.py` script.
 
 ## Quick Setup
 
@@ -21,54 +20,83 @@ pip install pycolmap-cuda12
 # pip install pycolmap
 ```
 
-## Verification
-
-Verify the installation:
-
-```bash
-# Check PyTorch and CUDA
-python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
-
-# Check pycolmap and CUDA device support
-python -c "import pycolmap; print(f'pycolmap version: {pycolmap.__version__}'); print(f'CUDA device: {pycolmap.Device.cuda}')"
-```
-
-Expected output:
-```
-PyTorch: 2.6.0+cu124
-CUDA available: True
-pycolmap version: 3.13.0
-CUDA device: Device.cuda
-```
-
-## GPU Acceleration
-
-The `video_to_colmap.py` script automatically uses GPU acceleration when `pycolmap-cuda12` is installed.
-
-To verify GPU is being used during feature extraction, look for this log message:
-```
-Creating SIFT GPU feature extractor
-```
-
-If you see `Creating SIFT CPU feature extractor` instead, GPU is not being used. Ensure you have:
-1. Installed `pycolmap-cuda12` (not `pycolmap`)
-2. A compatible NVIDIA GPU with CUDA drivers installed
-
 ## Usage
 
-Run the COLMAP reconstruction pipeline:
+There are two main scripts depending on your input type:
+
+### video_to_colmap.py
+
+The main script (`colmap/video_to_colmap.py:1`) processes video files and extracts frames automatically:
+
+**Single Video:**
 
 ```bash
-conda activate colmap
-
-# From images directory
-export IMAGE_DIR="/path/to/your/images"
-export OUTPUT_DIR="/path/to/output"
-python scripts/video_to_colmap.py ${IMAGE_DIR} ${OUTPUT_DIR}
-
-# From video file (extracts frames at specified fps)
-python scripts/video_to_colmap.py input.mp4 output_dir --fps 2
-
-# Specify GPU
-python scripts/video_to_colmap.py input_dir output_dir --gpu 0
+python colmap/video_to_colmap.py \
+  --inputs input.mp4 \
+  --output output_dir \
+  --fps 2 \
+  --gpu 0 \
+  --set-config colmap/configs/exhaustive.json
 ```
+
+**Multiple Videos (Multi-Camera):**
+
+```bash
+python colmap/video_to_colmap.py \
+  --inputs video1.mp4 video2.mp4 video3.mp4 \
+  --output output_dir \
+  --fps 4 \
+  --gpu 0 \
+  --set-config colmap/configs/exhaustive.json
+```
+**Test Video Processing (Skip COLMAP):**
+
+```bash
+# Useful for testing frame extraction and mask generation
+python colmap/video_to_colmap.py \
+  --inputs video1.mp4 video2.mp4 \
+  --output output_dir \
+  --fps 4 \
+  --skip-colmap
+```
+
+### image_to_colmap.py
+
+**Single Image Directory:**
+
+```bash
+python colmap/image_to_colmap.py \
+  --inputs /path/to/images \
+  --output output_dir \
+  --gpu 0 \
+  --original-fps 30 \
+  --target-fps 4 \
+  --set-config colmap/configs/exhaustive.json
+```
+
+**Multiple Image Directories (Multi-Camera):**
+
+```bash
+python colmap/image_to_colmap.py \
+  --inputs "/path/to/images1,/path/to/images2,/path/to/images3" \
+  --output output_dir \
+  --gpu 0 \
+  --original-fps 30 \
+  --target-fps 4 \
+  --set-config colmap/configs/exhaustive.json
+```
+
+## Output Structure
+
+After running either script, the output directory contains:
+
+```
+output_dir/
+├── images/           # Extracted/linked frames
+├── depths/           # Linked depth images (if found by image_to_colmap.py)
+├── masks/            # Auto-generated masks (if applicable)
+└── sparse/
+    └── 0/            # COLMAP reconstruction (cameras.bin, images.bin, points3D.bin)
+```
+
+**Note:** The `depths/` directory is only created when using `image_to_colmap.py` with source directories that have corresponding depth data.

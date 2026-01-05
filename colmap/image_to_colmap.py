@@ -188,11 +188,8 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
             if link_path.exists():
                 link_path.unlink()
 
-            # Use symlink for efficiency (or copy if symlink fails)
-            try:
-                link_path.symlink_to(img.resolve())
-            except OSError:
-                shutil.copy2(img, link_path)
+            # Copy images instead of symlinking
+            shutil.copy2(img, link_path)
 
             # Store mapping for human mask lookup (without extension)
             image_name_mapping[Path(new_name).stem] = img.stem
@@ -215,10 +212,8 @@ def setup_images_from_multiple_directories(input_dirs: List[Path], output_dir: P
                     if depth_link_path.exists():
                         depth_link_path.unlink()
 
-                    try:
-                        depth_link_path.symlink_to(depth_img.resolve())
-                    except OSError:
-                        shutil.copy2(depth_img, depth_link_path)
+                    # Copy depth images
+                    shutil.copy2(depth_img, depth_link_path)
 
                     depth_copied_count += 1
 
@@ -314,10 +309,8 @@ def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
         link_path = images_dir / img.name
         if link_path.exists():
             link_path.unlink()
-        try:
-            link_path.symlink_to(img.resolve())
-        except OSError:
-            shutil.copy2(img, link_path)
+        # Copy images instead of symlinking
+        shutil.copy2(img, link_path)
         linked_count += 1
 
         # Process corresponding depth image if available
@@ -336,10 +329,8 @@ def setup_images_from_single_directory(input_dir: Path, output_dir: Path,
                 if depth_link_path.exists():
                     depth_link_path.unlink()
 
-                try:
-                    depth_link_path.symlink_to(depth_img.resolve())
-                except OSError:
-                    shutil.copy2(depth_img, depth_link_path)
+                # Copy depth images
+                shutil.copy2(depth_img, depth_link_path)
 
                 depth_linked_count += 1
 
