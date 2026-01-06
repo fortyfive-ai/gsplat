@@ -427,11 +427,11 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
             "--ImageReader.single_camera", "0",  # Allow multiple cameras
             "--ImageReader.camera_model", "PINHOLE",  # Will use existing cameras
             "--SiftExtraction.max_num_features", str(extraction_options.sift.max_num_features),
-            "--SiftExtraction.use_gpu", "1" if extraction_options.use_gpu else "0",
+            "--FeatureExtraction.use_gpu", "1" if extraction_options.use_gpu else "0",
         ]
 
         if extraction_options.use_gpu:
-            cmd.extend(["--SiftExtraction.gpu_index", str(gpu_index)])
+            cmd.extend(["--FeatureExtraction.gpu_index", str(gpu_index)])
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -567,11 +567,11 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
             "--database_path", str(database_path),
             "--match_list_path", pairs_file,
             "--match_type", "pairs",
-            "--SiftMatching.use_gpu", use_gpu,
+            "--FeatureMatching.use_gpu", use_gpu,
         ]
 
         if gpu_index >= 0:
-            cmd.extend(["--SiftMatching.gpu_index", gpu_str])
+            cmd.extend(["--FeatureMatching.gpu_index", gpu_str])
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 

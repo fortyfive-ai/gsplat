@@ -15,10 +15,10 @@ import numpy as np
 import cv2
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import argparse
 from collections import defaultdict
 from tqdm import tqdm
 import struct
+from params_proto import proto
 
 # COLMAP binary reading utilities
 def read_next_bytes(fid, num_bytes, format_char_sequence, endian_character="<"):
@@ -446,28 +446,24 @@ def save_ply(points: np.ndarray, output_path: Path, colors: Optional[np.ndarray]
         vertex_data.tofile(f)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate dense point clouds from COLMAP and depth maps")
-    parser.add_argument("--colmap-dir", type=str, required=True,
-                       help="Path to COLMAP output directory")
-    parser.add_argument("--output", type=str, required=True,
-                       help="Output PLY file path")
-    parser.add_argument("--depth-scale", type=float, default=1000.0,
-                       help="Depth scale factor (default: 1000 for mm to m)")
-    parser.add_argument("--min-depth", type=float, default=0.1,
-                       help="Minimum valid depth in meters")
-    parser.add_argument("--max-depth", type=float, default=10.0,
-                       help="Maximum valid depth in meters")
-    parser.add_argument("--subsample", type=int, default=1,
-                       help="Subsample depth maps by this factor (1=no subsampling)")
-    parser.add_argument("--filter-edges", action="store_true", default=False,
-                       help="Filter depth edge artifacts (default: False)")
-    parser.add_argument("--edge-threshold", type=float, default=0.5,
-                       help="Depth gradient threshold for edge filtering in meters (default: 0.5)")
+@proto.cli
+def main(
+    colmap_dir: str = None,  # Path to COLMAP output directory
+    output: str = None,  # Output PLY file path
+    depth_scale: float = 1000.0,  # Depth scale factor (default: 1000 for mm to m)
+    min_depth: float = 0.1,  # Minimum valid depth in meters
+    max_depth: float = 10.0,  # Maximum valid depth in meters
+    subsample: int = 1,  # Subsample depth maps by this factor (1=no subsampling)
+    filter_edges: bool = False,  # Filter depth edge artifacts
+    edge_threshold: float = 0.5,  # Depth gradient threshold for edge filtering in meters
+):
+    """Generate dense point clouds from COLMAP and depth maps"""
+    if colmap_dir is None or output is None:
+        print("Error: colmap_dir and output are required arguments")
+        print("Usage: python dense_from_depth.py --colmap-dir /path/to/colmap/output --output dense_points.ply")
+        return 1
 
-    args = parser.parse_args()
-
-    colmap_dir = Path(args.colmap_dir)
+    colmap_dir = Path(colmap_dir)
     sparse_dir = colmap_dir / "sparse" / "0"
     depths_dir = colmap_dir / "depths"
     images_dir = colmap_dir / "images"
@@ -492,6 +488,18 @@ def main():
     point_ids = list(points3D.keys())
     points3D_xyz = np.array([points3D[pid]["xyz"] for pid in point_ids])
 
+    # Build a mapping from original image filenames (basename) to symlink names
+    # This handles cases where COLMAP stores paths that resolve differently than symlink targets
+    print("Building image path mapping...")
+    basename_to_symlink = {}
+    for img_file in images_dir.iterdir():
+        if img_file.is_symlink() or img_file.is_file():
+            # Map the basename to the symlink/file name
+            # This works even if paths don't match exactly
+            target = img_file.resolve()
+            basename = target.name
+            basename_to_symlink[basename] = img_file.name
+
     # Estimate scale for each image
     print("\nEstimating scale factors...")
     scales = {}
@@ -499,7 +507,19 @@ def main():
 
     for img_id, img_data in tqdm(images.items()):
         img_name = img_data["name"]
-        depth_name = img_name.rsplit('.', 1)[0] + '.png'
+
+        # Extract basename from COLMAP's stored path
+        colmap_basename = Path(img_name).name
+
+        # Look up the actual filename in our images directory
+        if colmap_basename in basename_to_symlink:
+            # Use the symlink filename for depth lookup
+            actual_img_name = basename_to_symlink[colmap_basename]
+        else:
+            # Fall back to using the basename directly
+            actual_img_name = colmap_basename
+
+        depth_name = actual_img_name.rsplit('.', 1)[0] + '.png'
         depth_path = depths_dir / depth_name
 
         if not depth_path.exists():
@@ -507,7 +527,7 @@ def main():
             continue
 
         # Read depth map
-        metric_depth = read_depth_image(depth_path, args.depth_scale)
+        metric_depth = read_depth_image(depth_path, depth_scale)
 
         # Get camera parameters
         camera = cameras[img_data["camera_id"]]
@@ -532,7 +552,7 @@ def main():
         scale, n_corr = estimate_scale_for_image(
             sparse_pts, depths, metric_depth, points2D,
             (camera["height"], camera["width"]),
-            args.min_depth, args.max_depth
+            min_depth, max_depth
         )
 
         if scale is not None:
@@ -557,9 +577,22 @@ def main():
 
     for img_id, img_data in tqdm(images.items()):
         img_name = img_data["name"]
-        depth_name = img_name.rsplit('.', 1)[0] + '.png'
+
+        # Extract basename from COLMAP's stored path
+        colmap_basename = Path(img_name).name
+
+        # Look up the actual filename in our images directory
+        if colmap_basename in basename_to_symlink:
+            # Use the symlink filename for depth lookup
+            actual_img_name = basename_to_symlink[colmap_basename]
+            img_path = images_dir / actual_img_name
+        else:
+            # Fall back to using the basename directly
+            actual_img_name = colmap_basename
+            img_path = images_dir / img_name
+
+        depth_name = actual_img_name.rsplit('.', 1)[0] + '.png'
         depth_path = depths_dir / depth_name
-        img_path = images_dir / img_name
 
         if not depth_path.exists():
             continue
@@ -574,7 +607,7 @@ def main():
         color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
 
         # Read depth map
-        metric_depth = read_depth_image(depth_path, args.depth_scale)
+        metric_depth = read_depth_image(depth_path, depth_scale)
 
         # Ensure color and depth have same dimensions
         if color_image.shape[:2] != metric_depth.shape:
@@ -588,23 +621,23 @@ def main():
             mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) > 0
 
         # Subsample if requested
-        if args.subsample > 1:
-            metric_depth = metric_depth[::args.subsample, ::args.subsample]
-            color_image = color_image[::args.subsample, ::args.subsample]
+        if subsample > 1:
+            metric_depth = metric_depth[::subsample, ::subsample]
+            color_image = color_image[::subsample, ::subsample]
             if mask is not None:
-                mask = mask[::args.subsample, ::args.subsample]
+                mask = mask[::subsample, ::subsample]
 
         # Get camera parameters
         camera = cameras[img_data["camera_id"]]
         K = get_camera_matrix(camera)
 
         # Adjust K for subsampling
-        if args.subsample > 1:
+        if subsample > 1:
             K = K.copy()
-            K[0, 0] /= args.subsample  # fx
-            K[1, 1] /= args.subsample  # fy
-            K[0, 2] /= args.subsample  # cx
-            K[1, 2] /= args.subsample  # cy
+            K[0, 0] /= subsample  # fx
+            K[1, 1] /= subsample  # fy
+            K[0, 2] /= subsample  # cx
+            K[1, 2] /= subsample  # cy
 
         R = qvec2rotmat(img_data["qvec"])
         t = np.array(img_data["tvec"])
@@ -615,7 +648,7 @@ def main():
         # Unproject to world coordinates with colors
         points_world, colors = unproject_depth_to_points(
             metric_depth, color_image, K, R, t, scale, mask,
-            args.min_depth, args.max_depth, args.filter_edges, args.edge_threshold
+            min_depth, max_depth, filter_edges, edge_threshold
         )
         all_points.append(points_world)
         all_colors.append(colors)
@@ -627,7 +660,7 @@ def main():
     print(f"\nGenerated {len(all_points)} dense points")
 
     # Save to PLY
-    output_path = Path(args.output)
+    output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     save_ply(all_points, output_path, all_colors)
     print(f"Saved dense point cloud to: {output_path}")
@@ -636,4 +669,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()

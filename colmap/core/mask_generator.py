@@ -3,12 +3,44 @@
 import os
 from pathlib import Path
 from PIL import Image
+import numpy as np
 
 from ..utils.ffmpeg_utils import get_video_frame_count
 
 
+def merge_masks(base_mask: Image.Image, human_mask: Image.Image) -> Image.Image:
+    """Merge two masks using logical AND (intersection).
+
+    Black pixels (0) in either mask result in black pixels in the final mask.
+    Only areas that are white (255) in both masks remain white.
+
+    Args:
+        base_mask: Base mask (e.g., from proxie_masks)
+        human_mask: Human mask to merge
+
+    Returns:
+        Merged mask as PIL Image
+    """
+    # Convert to numpy arrays
+    base_array = np.array(base_mask)
+    human_array = np.array(human_mask)
+
+    # Ensure same size
+    if base_array.shape != human_array.shape:
+        # Resize human mask to match base mask
+        human_mask_resized = human_mask.resize(base_mask.size, Image.LANCZOS)
+        human_array = np.array(human_mask_resized)
+
+    # Merge: take minimum (black pixels from either mask remain black)
+    merged_array = np.minimum(base_array, human_array)
+
+    # Convert back to PIL Image
+    return Image.fromarray(merged_array, mode='L')
+
+
 def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = None,
-                video_frame_counts: list[int] = None, fps: float = 2.0, use_video_prefixes: bool = False) -> Path:
+                video_frame_counts: list[int] = None, fps: float = 2.0, use_video_prefixes: bool = False,
+                human_mask_sources: dict = None, image_name_mapping: dict = None) -> Path:
     """Setup masks directory with camera-specific masks or empty masks.
 
     Args:
@@ -18,6 +50,9 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
         video_frame_counts: List of frame counts per video (if known)
         fps: Frame rate used for extraction
         use_video_prefixes: If True, frames are named with video prefixes (video1_*, video2_*, etc.)
+        human_mask_sources: Dict mapping video prefix to human_masks directory path (for multiple inputs)
+                           or single Path for single input
+        image_name_mapping: Dict mapping new image name (stem) to original image stem for human mask lookup
 
     Returns:
         Path: Path to masks directory
@@ -43,6 +78,17 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
     first_image = Image.open(image_files[0])
     img_width, img_height = first_image.size
     first_image.close()
+
+    # Legacy support: Check for human_masks directory at the same level as images_dir (output_dir)
+    # This is kept for backward compatibility
+    legacy_human_masks_dir = output_dir / "human_masks"
+    has_legacy_human_masks = legacy_human_masks_dir.exists() and legacy_human_masks_dir.is_dir()
+    if has_legacy_human_masks:
+        human_mask_files = list(legacy_human_masks_dir.glob("*.png")) + list(legacy_human_masks_dir.glob("*.jpg"))
+        if human_mask_files:
+            print(f"Found legacy human_masks directory at output with {len(human_mask_files)} masks")
+        else:
+            has_legacy_human_masks = False
 
     # Camera identifiers to look for
     camera_identifiers = ["nav_front", "nav_rear", "nav_left", "nav_right", "blindspot_front", "blindspot_rear"]
@@ -93,13 +139,41 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
                 mask_name = img_file.stem + ".png"
                 mask_path = masks_dir / mask_name
 
+                # Get base mask (proxy mask)
                 if camera_mask_path and camera_mask_path in loaded_masks:
-                    loaded_masks[camera_mask_path].save(mask_path)
+                    base_mask = loaded_masks[camera_mask_path].copy()
                 else:
                     # Create empty (all white) mask
-                    empty_mask = Image.new('L', (img_width, img_height), 255)
-                    empty_mask.save(mask_path)
-                    empty_mask.close()
+                    base_mask = Image.new('L', (img_width, img_height), 255)
+
+                # Check for corresponding human mask from input directories
+                if human_mask_sources and isinstance(human_mask_sources, dict) and video_prefix in human_mask_sources:
+                    human_masks_source_dir = human_mask_sources[video_prefix]
+                    # Get original image name using the mapping
+                    original_stem = image_name_mapping.get(img_file.stem) if image_name_mapping else None
+
+                    if original_stem:
+                        # Try to find matching human mask by original image stem
+                        human_mask_path = human_masks_source_dir / f"{original_stem}.png"
+                        if not human_mask_path.exists():
+                            # Try .jpg extension
+                            human_mask_path = human_masks_source_dir / f"{original_stem}.jpg"
+
+                        if human_mask_path.exists():
+                            human_mask = Image.open(human_mask_path).convert('L')
+                            base_mask = merge_masks(base_mask, human_mask)
+                            human_mask.close()
+
+                # Legacy support: check output directory for human masks
+                elif has_legacy_human_masks:
+                    human_mask_path = legacy_human_masks_dir / mask_name
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                base_mask.save(mask_path)
+                base_mask.close()
 
         # Close all loaded masks
         for mask in loaded_masks.values():
@@ -158,13 +232,23 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
                 mask_name = f"frame_{frame_num:04d}.png"
                 mask_path = masks_dir / mask_name
 
+                # Get base mask (proxy mask)
                 if camera_mask_path and camera_mask_path in loaded_masks:
-                    loaded_masks[camera_mask_path].save(mask_path)
+                    base_mask = loaded_masks[camera_mask_path].copy()
                 else:
                     # Create empty (all white) mask
-                    empty_mask = Image.new('L', (img_width, img_height), 255)
-                    empty_mask.save(mask_path)
-                    empty_mask.close()
+                    base_mask = Image.new('L', (img_width, img_height), 255)
+
+                # Check for corresponding human mask (legacy support only in this branch)
+                if has_legacy_human_masks:
+                    human_mask_path = legacy_human_masks_dir / mask_name
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                base_mask.save(mask_path)
+                base_mask.close()
 
             frame_start = frame_end + 1
 
@@ -197,28 +281,101 @@ def setup_masks(output_dir: Path, images_dir: Path, video_paths: list[Path] = No
             for img_file in image_files:
                 mask_name = img_file.stem + ".png"
                 mask_path = masks_dir / mask_name
-                camera_mask.save(mask_path)
+
+                # Get base mask (proxy mask)
+                base_mask = camera_mask.copy()
+
+                # Check for corresponding human mask from input directory
+                if human_mask_sources and isinstance(human_mask_sources, Path):
+                    # Single input directory case - human_mask_sources is a Path
+                    human_mask_path = human_mask_sources / f"{img_file.stem}.png"
+                    if not human_mask_path.exists():
+                        human_mask_path = human_mask_sources / f"{img_file.stem}.jpg"
+
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                # Legacy support: check output directory for human masks
+                elif has_legacy_human_masks:
+                    human_mask_path = legacy_human_masks_dir / mask_name
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                base_mask.save(mask_path)
+                base_mask.close()
 
             camera_mask.close()
             print(f"Created {len(image_files)} camera-specific masks")
         else:
             print(f"No camera mask found, creating {len(image_files)} empty (all-white) masks...")
-            empty_mask = Image.new('L', (img_width, img_height), 255)
             for img_file in image_files:
                 mask_name = img_file.stem + ".png"
                 mask_path = masks_dir / mask_name
-                empty_mask.save(mask_path)
-            empty_mask.close()
+
+                # Get base mask (empty)
+                base_mask = Image.new('L', (img_width, img_height), 255)
+
+                # Check for corresponding human mask from input directory
+                if human_mask_sources and isinstance(human_mask_sources, Path):
+                    # Single input directory case - human_mask_sources is a Path
+                    human_mask_path = human_mask_sources / f"{img_file.stem}.png"
+                    if not human_mask_path.exists():
+                        human_mask_path = human_mask_sources / f"{img_file.stem}.jpg"
+
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                # Legacy support: check output directory for human masks
+                elif has_legacy_human_masks:
+                    human_mask_path = legacy_human_masks_dir / mask_name
+                    if human_mask_path.exists():
+                        human_mask = Image.open(human_mask_path).convert('L')
+                        base_mask = merge_masks(base_mask, human_mask)
+                        human_mask.close()
+
+                base_mask.save(mask_path)
+                base_mask.close()
+
             print(f"Created {len(image_files)} empty masks")
     else:
         # No video paths provided - create empty masks
         print(f"No video information, creating {len(image_files)} empty (all-white) masks...")
-        empty_mask = Image.new('L', (img_width, img_height), 255)
         for img_file in image_files:
             mask_name = img_file.stem + ".png"
             mask_path = masks_dir / mask_name
-            empty_mask.save(mask_path)
-        empty_mask.close()
+
+            # Get base mask (empty)
+            base_mask = Image.new('L', (img_width, img_height), 255)
+
+            # Check for corresponding human mask from input directory
+            if human_mask_sources and isinstance(human_mask_sources, Path):
+                # Single input directory case - human_mask_sources is a Path
+                human_mask_path = human_mask_sources / f"{img_file.stem}.png"
+                if not human_mask_path.exists():
+                    human_mask_path = human_mask_sources / f"{img_file.stem}.jpg"
+
+                if human_mask_path.exists():
+                    human_mask = Image.open(human_mask_path).convert('L')
+                    base_mask = merge_masks(base_mask, human_mask)
+                    human_mask.close()
+
+            # Legacy support: check output directory for human masks
+            elif has_legacy_human_masks:
+                human_mask_path = legacy_human_masks_dir / mask_name
+                if human_mask_path.exists():
+                    human_mask = Image.open(human_mask_path).convert('L')
+                    base_mask = merge_masks(base_mask, human_mask)
+                    human_mask.close()
+
+            base_mask.save(mask_path)
+            base_mask.close()
+
         print(f"Created {len(image_files)} empty masks")
 
     return masks_dir
