@@ -45,8 +45,8 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 # Install pycolmap with CUDA support (recommended for GPU acceleration)
 pip install pycolmap==3.13.0
 
-# Or install CPU-only version (slower)
-# pip install pycolmap==3.13.0
+# Install additional dependencies
+pip install opencv-python tqdm
 ```
 
 ## Usage
