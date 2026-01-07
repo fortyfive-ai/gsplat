@@ -1,11 +1,53 @@
 """Feature extraction and matching using COLMAP and hloc."""
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 import re
 
 from .image_grouping import group_images_by_pattern, create_matching_sets
+
+
+def _find_colmap_binary() -> str:
+    """Find the COLMAP binary, checking PATH and common conda locations.
+
+    Returns:
+        Path to colmap binary
+
+    Raises:
+        RuntimeError: If colmap binary cannot be found
+    """
+    # Check PATH first
+    colmap_bin = shutil.which("colmap")
+    if colmap_bin is not None:
+        return colmap_bin
+
+    # Try common conda paths
+    candidates = []
+
+    # Current conda env
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        candidates.append(os.path.join(conda_prefix, "bin", "colmap"))
+
+    # Common alternate locations
+    home = os.path.expanduser("~")
+    candidates.extend([
+        os.path.join(home, ".conda", "envs", "default", "bin", "colmap"),
+        os.path.join(home, ".conda", "envs", "colmap", "bin", "colmap"),
+        os.path.join(home, "miniconda3", "envs", "default", "bin", "colmap"),
+        os.path.join(home, "miniconda3", "envs", "colmap", "bin", "colmap"),
+        os.path.join(home, "anaconda3", "envs", "default", "bin", "colmap"),
+        "/usr/local/bin/colmap",
+        "/usr/bin/colmap",
+    ])
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    raise RuntimeError("Could not find colmap binary. Make sure COLMAP is installed and in PATH.")
 
 
 def _normalize_camera_name(name: str) -> str:
@@ -420,8 +462,11 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         # Use COLMAP's feature extractor directly with the existing database
         import subprocess
 
+        colmap_bin = _find_colmap_binary()
+        print(f"  Using COLMAP binary: {colmap_bin}")
+
         cmd = [
-            "colmap", "feature_extractor",
+            colmap_bin, "feature_extractor",
             "--database_path", str(database_path),
             "--image_path", str(images_dir),
             "--ImageReader.single_camera", "0",  # Allow multiple cameras
@@ -559,19 +604,20 @@ def run_colmap(output_dir: Path, images_dir: Path, gpu_index: int = 0,
         import subprocess
 
         # Use COLMAP matches_importer to match custom pairs
+        colmap_bin = _find_colmap_binary()
         gpu_str = str(gpu_index)
         use_gpu = "1" if (device == pycolmap.Device.cuda or device == pycolmap.Device.auto) else "0"
 
         cmd = [
-            "colmap", "matches_importer",
+            colmap_bin, "matches_importer",
             "--database_path", str(database_path),
             "--match_list_path", pairs_file,
             "--match_type", "pairs",
-            "--SiftMatching.use_gpu", use_gpu,
+            "--FeatureMatching.use_gpu", use_gpu,
         ]
 
         if gpu_index >= 0:
-            cmd.extend(["--SiftMatching.gpu_index", gpu_str])
+            cmd.extend(["--FeatureMatching.gpu_index", gpu_str])
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 

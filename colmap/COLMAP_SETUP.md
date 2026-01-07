@@ -1,6 +1,35 @@
 # COLMAP Environment Setup
 
 
+## System-Level COLMAP Installation
+
+The scripts require the COLMAP binary with CUDA support. Download the pre-built binary from GitHub releases:
+
+```bash
+# Download COLMAP 3.11.1 with CUDA support (Ubuntu 24.04)
+wget https://github.com/colmap/colmap/releases/download/3.11.1/colmap-3.11.1-linux-cuda.tar.gz
+
+# Extract and install
+tar -xzf colmap-3.11.1-linux-cuda.tar.gz
+cp colmap-3.11.1-linux-cuda/bin/colmap ~/.local/bin/
+chmod +x ~/.local/bin/colmap
+
+# Verify installation
+colmap --help
+```
+
+**Requirements:**
+- CUDA 12.x installed (the binary links against libcudart.so.12, libcusolver.so.11, libcublas.so.12, etc.)
+- System dependencies (Ubuntu 24.04):
+  ```bash
+  sudo apt install libgmp10 libglew2.2 libboost-program-options1.83.0 \
+      libspqr4 libcholmod5 libmetis5 liblapack3 libblas3 libsqlite3-0 \
+      libgoogle-glog0v6t64 libfreeimage3 qtbase5-dev
+  ```
+
+**Note:** The COLMAP binary must be available in your system PATH. The example above installs to `~/.local/bin/`, which should already be in PATH on most systems.
+
+
 ## Quick Setup
 
 ```bash
@@ -14,10 +43,10 @@ conda activate colmap
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install pycolmap with CUDA support (recommended for GPU acceleration)
-pip install pycolmap-cuda12
+pip install pycolmap==3.13.0
 
-# Or install CPU-only version (slower)
-# pip install pycolmap
+# Install additional dependencies
+pip install opencv-python tqdm
 ```
 
 ## Usage
