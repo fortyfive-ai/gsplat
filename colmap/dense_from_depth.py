@@ -450,6 +450,7 @@ def save_ply(points: np.ndarray, output_path: Path, colors: Optional[np.ndarray]
 def main(
     colmap_dir: str = None,  # Path to COLMAP output directory
     output: str = None,  # Output PLY file path
+    depths_subdir: str = "depths",  # Subdirectory name for depth maps (e.g., "depths", "depths_anything")
     depth_scale: float = 1000.0,  # Depth scale factor (default: 1000 for mm to m)
     min_depth: float = 0.1,  # Minimum valid depth in meters
     max_depth: float = 10.0,  # Maximum valid depth in meters
@@ -465,7 +466,7 @@ def main(
 
     colmap_dir = Path(colmap_dir)
     sparse_dir = colmap_dir / "sparse" / "0"
-    depths_dir = colmap_dir / "depths"
+    depths_dir = colmap_dir / depths_subdir
     images_dir = colmap_dir / "images"
     masks_dir = colmap_dir / "masks"
 
