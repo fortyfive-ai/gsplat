@@ -1,6 +1,6 @@
 .clangd
 compile_commands.json
-
+builds
 # Visual Studio Code configs.
 .vscode/
 

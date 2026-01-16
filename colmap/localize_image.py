@@ -260,12 +260,28 @@ class ImageLocalizer:
         self.use_gpu = use_gpu
         self.num_features = num_features
 
-        # Initialize SIFT detector
-        self.sift = cv2.SIFT_create(nfeatures=num_features)
+        # Initialize pycolmap SIFT detector (matches COLMAP's feature extraction)
+        options = pycolmap.FeatureExtractionOptions()
+        options.sift.max_num_features = num_features
+        self.sift = pycolmap.Sift(options)
 
-        # Build FLANN index for 3D point descriptors if available
+        # Convert database descriptors to L1_ROOT normalized format (same as pycolmap)
+        # COLMAP stores descriptors as uint8, we need to convert to normalized float32
         if len(self.db.point_descriptors) > 0:
+            self.db_descriptors_normalized = self._normalize_descriptors(
+                self.db.point_descriptors.astype(np.float32)
+            )
             self._build_flann_index()
+
+    def _normalize_descriptors(self, descriptors: np.ndarray) -> np.ndarray:
+        """Apply L1_ROOT normalization to match COLMAP's descriptor format."""
+        # L1 normalize
+        l1_norms = np.sum(np.abs(descriptors), axis=1, keepdims=True)
+        l1_norms = np.maximum(l1_norms, 1e-8)
+        descriptors = descriptors / l1_norms
+        # Square root (L1_ROOT)
+        descriptors = np.sqrt(descriptors)
+        return descriptors.astype(np.float32)
 
     def _build_flann_index(self):
         """Build FLANN index for fast nearest neighbor search."""
@@ -274,30 +290,33 @@ class ImageLocalizer:
         search_params = dict(checks=100)
         self.flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-        # Add descriptors to index
-        self.flann.add([self.db.point_descriptors.astype(np.float32)])
+        # Add normalized descriptors to index
+        self.flann.add([self.db_descriptors_normalized])
         self.flann.train()
 
     def _extract_features(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract SIFT features from image."""
+        """Extract SIFT features from image using pycolmap (matches COLMAP's extraction)."""
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image
 
-        keypoints, descriptors = self.sift.detectAndCompute(gray, None)
+        # pycolmap.Sift.extract returns (keypoints, descriptors)
+        # keypoints is Nx6 array: [x, y, a11, a12, a21, a22] (affine shape)
+        # descriptors is Nx128 float32 array (L1_ROOT normalized)
+        keypoints, descriptors = self.sift.extract(gray)
 
-        if descriptors is None:
+        if descriptors is None or len(descriptors) == 0:
             return np.array([]).reshape(0, 2), np.array([]).reshape(0, 128)
 
-        # Convert keypoints to numpy array
-        pts = np.array([kp.pt for kp in keypoints])
+        # Extract x, y coordinates from keypoints
+        pts = keypoints[:, :2]  # First two columns are x, y
         return pts, descriptors
 
     def _match_features(
         self,
         descriptors: np.ndarray,
-        ratio_threshold: float = 0.75
+        ratio_threshold: float = 0.95
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Match 2D features to 3D points using ratio test."""
         if len(descriptors) == 0 or len(self.db.point_descriptors) == 0:
@@ -320,9 +339,19 @@ class ImageLocalizer:
         if len(good_matches) == 0:
             return np.array([]).reshape(0, 2), np.array([]).reshape(0, 3)
 
+        # Keep only unique 3D point matches (best match per 3D point)
+        # This handles cases where multiple 2D points match the same 3D point
+        best_matches = {}
+        for m in good_matches:
+            train_idx = m.trainIdx
+            if train_idx not in best_matches or m.distance < best_matches[train_idx].distance:
+                best_matches[train_idx] = m
+
+        unique_matches = list(best_matches.values())
+
         # Get matched indices
-        query_indices = np.array([m.queryIdx for m in good_matches])
-        train_indices = np.array([m.trainIdx for m in good_matches])
+        query_indices = np.array([m.queryIdx for m in unique_matches])
+        train_indices = np.array([m.trainIdx for m in unique_matches])
 
         return query_indices, train_indices
 
