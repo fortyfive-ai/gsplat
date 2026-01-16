@@ -1,0 +1,31 @@
+{
+  "description": "Exhaustive matching for Insta360 16-camera perspective images",
+  "group_by": "video_camera",
+  "matching": {
+    "intra_set_overlap": 30,
+    "inter_set_sample_rate": 1
+  },
+  "sets": {
+    "all_cameras": {
+      "groups": [
+        "video1_front",
+        "video2_frontup",
+        "video3_frontdown",
+        "video4_frontleft",
+        "video5_frontright",
+        "video6_back",
+        "video7_backup",
+        "video8_backdown",
+        "video9_backleft",
+        "video10_backright",
+        "video11_left",
+        "video12_leftup",
+        "video13_leftdown",
+        "video14_right",
+        "video15_rightup",
+        "video16_rightdown"
+      ],
+      "matching_mode": "exhaustive"
+    }
+  }
+}
