@@ -265,23 +265,24 @@ class ImageLocalizer:
         options.sift.max_num_features = num_features
         self.sift = pycolmap.Sift(options)
 
-        # Convert database descriptors to L1_ROOT normalized format (same as pycolmap)
-        # COLMAP stores descriptors as uint8, we need to convert to normalized float32
+        # Convert database descriptors from uint8 to float32 L1_ROOT normalized format
+        # COLMAP stores descriptors as uint8 (L1_ROOT * 512 clamped to 0-255)
+        # We convert back to float32 L1_ROOT to match pycolmap.Sift.extract() output
         if len(self.db.point_descriptors) > 0:
-            self.db_descriptors_normalized = self._normalize_descriptors(
-                self.db.point_descriptors.astype(np.float32)
+            self.db_descriptors_normalized = self._convert_db_descriptors(
+                self.db.point_descriptors
             )
             self._build_flann_index()
 
-    def _normalize_descriptors(self, descriptors: np.ndarray) -> np.ndarray:
-        """Apply L1_ROOT normalization to match COLMAP's descriptor format."""
-        # L1 normalize
-        l1_norms = np.sum(np.abs(descriptors), axis=1, keepdims=True)
-        l1_norms = np.maximum(l1_norms, 1e-8)
-        descriptors = descriptors / l1_norms
-        # Square root (L1_ROOT)
-        descriptors = np.sqrt(descriptors)
-        return descriptors.astype(np.float32)
+    def _convert_db_descriptors(self, descriptors: np.ndarray) -> np.ndarray:
+        """Convert uint8 database descriptors to float32 L1_ROOT normalized format.
+
+        COLMAP stores descriptors as uint8 by: float32_L1ROOT * 512 -> clamp(0, 255) -> uint8
+        To convert back: uint8 / 512.0
+
+        This matches what pycolmap.Sift.extract() returns (L1_ROOT normalized float32).
+        """
+        return descriptors.astype(np.float32) / 512.0
 
     def _build_flann_index(self):
         """Build FLANN index for fast nearest neighbor search."""
